@@ -1,0 +1,8 @@
+{
+  "id": "note-templates",
+  "name": { "zh": "模板库", "en": "Note Templates" },
+  "icon": "layout-grid",
+  "version": "1.0.0",
+  "layout": { "main": [{ "type": "plugin:note-templates:library" }] },
+  "requires": { "views": ["plugin:note-templates:library"] }
+}
