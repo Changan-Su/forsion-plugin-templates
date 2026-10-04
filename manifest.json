@@ -2,7 +2,7 @@
   "id": "note-templates",
   "name": "模板库",
   "nameEn": "Note Templates",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "apiVersion": 1,
   "main": "main.js",
   "description": "把你笔记库里 Templates/ 文件夹的每一篇普通笔记当模板用:笔记里敲 /模板 插一段结构、命令面板或文件树右键「从模板新建」起一篇新笔记、「模板库」视图里逐个预览(变量已代入)。变量支持 {{date}} {{time}} {{title}} 以及 {{date:+1d:YYYY-MM-DD}} 这类偏移与格式。数据流向:模板和产物全都是你库里的普通 Markdown 文件,插件只读写你的本地笔记库,不联网、不调用任何模型、不执行模板里的任何代码。",
