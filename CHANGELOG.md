@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.1.2 — 2026-11-18
+
+- 存着的「最近使用」读不出来时(文件读出错、是空的、写到一半或被手改坏),这次运行里「最近使用」只记在内存、提示一次,不再保存,也不再拿库里的 `.note-templates.json` 顶上:以前会按空的(或那份旧文件)接着用,下一次用模板就把原来存着的整份盖掉。原来的记录原封不动,下次启动再读。没存过时照旧。需要 2026-11-17 之后的 Forsion(更早的版本读不出来时仍当没存过)。
+- 「最近使用」还没读回来就用了模板,现在等读完再保存,存下的是原来的加上这一次,不会只剩这一条。
+- **English:** When the saved Recent list can't be read (a read error, an empty file, a write cut off halfway, or a hand edit that broke it), Recent is kept in memory for this session only, you're told once, nothing is saved, and the `.note-templates.json` file in your vault is no longer used in its place. Before, the plugin carried on with an empty list (or that older file) and the next template you used overwrote the whole saved list. The original is left as it was and read again next time Forsion starts. With nothing saved yet it works as before. Needs a Forsion build from 2026-11-17 or later (earlier builds still treat unreadable data as never saved).
+- **English:** A template used before the Recent list has loaded now waits for it, so what gets saved is the original list plus that use, not that one entry alone.
+
 ## 1.1.1 — 2026-10-04
 
 - Space 图标换成插件自己的图标,不再和别的插件共用图标库里的同一枚(`space.json` 的 `iconFile`)。需要支持 Space 自绘图标的 Forsion(2.12.2 之后的版本);更早的版本照旧显示原来的图标。配方版本不变,已保存的布局不受影响。
