@@ -846,7 +846,13 @@ async function replayEarly() {
   mruEarly = []
   if (disposed || !list.length) return // 插件已经停用 / 重载:旧实例不再写,免得盖掉新实例存下的
   for (let i = 0; i < list.length; i++) bumpRecent(list[i])
-  for (const fn of rerenders) fn({}) // 开着的模板库里「最近使用」跟上
+  for (const fn of rerenders) {
+    try {
+      fn({}) // 开着的模板库里「最近使用」跟上
+    } catch (e) {
+      /* 重画出错不该挡住保存 */
+    }
+  }
   await saveMru()
 }
 
