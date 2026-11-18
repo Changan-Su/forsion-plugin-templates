@@ -114,6 +114,7 @@ const MSG = {
     errActivePage: '目标正是你此刻打开的那篇笔记,已中止 —— 绝不覆盖你正在编辑的内容',
     warnRootFolder: '模板文件夹设置不合法(不能是库根或越界路径),已回退到 {folder}',
     warnTooBroad: '这个文件夹里有 {n} 篇笔记,只列出前 {c} 篇。把模板收进一个更小的文件夹会更好用。',
+    mruUnreadable: '读不出已保存的「最近使用」记录,记录最近使用先停用,也不会保存改动,原来的记录没有动。这次用到的模板只在本次运行里列进「最近使用」,重启后不会留下。',
   },
   en: {
     listSep: ', ',
@@ -165,6 +166,7 @@ const MSG = {
     errActivePage: 'The target is the very note you have open right now, so it was aborted — what you are editing is never overwritten',
     warnRootFolder: 'The templates folder setting is not valid (it cannot be the vault root or escape the vault), so it fell back to {folder}',
     warnTooBroad: 'That folder holds {n} notes; only the first {c} are listed. Templates are easier to use in a smaller folder.',
+    mruUnreadable: 'Your saved list of recently used templates could not be read. Remembering recent templates is paused and nothing will be saved, so the original list is left as it was. Templates you use now show under Recent for this session only.',
   },
 }
 
@@ -597,6 +599,15 @@ let totalFound = 0
 let warnedRootFolder = false
 let mru = { v: 1, recent: [] }
 let mruMemoryOnly = false
+// 存过却读不出来(宿主 2026-11-17 起 loadData reject,code = 'plugin-data-unreadable':读出错 / 零字节 / 写到一半 / 被手改坏):
+// 以前落到 sidecar / 空 MRU 接着用,下一次用模板就把存着的「最近使用」整份盖掉。现在本次运行里只记在内存、
+// 不调 saveData 也不写 sidecar(不读 sidecar:那是旧宿主时代的另一份,拿它顶上会让人以为原来的回来了),提示一次;下次启动再读。
+// 没存过(null)照旧去读 sidecar;旧宿主读不出来也回 null;别的读错误照旧落到 sidecar。
+// 不拿 mruMemoryOnly 当闸:它在 sidecar 正被打开 / 写失败时也会置上,那两种情况之后还要接着试着写。
+let mruUnreadable = false
+const isDataUnreadable = (e) => !!e && typeof e === 'object' && e.code === 'plugin-data-unreadable'
+let mruLoading = null // 启动那次读 MRU 还没回来时 = 它的 promise;没回来之前的 pushRecent 排在它后面(见 pushRecent)
+let mruEarly = [] // 启动那次读回来之前用过的模板(按先后),读完一并记
 let pickOverride = null // 仅 check.mjs 注入(生产环境 __NOTE_TEMPLATES_TEST__ 不存在 → 恒 null)
 const watchers = []
 const rerenders = new Set() // 已挂载视图的重画函数
@@ -738,7 +749,20 @@ function sidecarPath() {
   return p
 }
 
-async function loadMru() {
+function loadMru() {
+  const job = readMru()
+    .catch(() => {
+      /* 读 MRU 失败不该连坐启动 */
+    })
+    .then(() => {
+      if (mruLoading === job) mruLoading = null
+    })
+  mruLoading = job
+  return job
+}
+
+async function readMru() {
+  mruUnreadable = false
   if (ctx.loadData) {
     try {
       const d = await ctx.loadData()
@@ -747,7 +771,13 @@ async function loadMru() {
         return
       }
     } catch (e) {
-      /* 落到 sidecar */
+      if (isDataUnreadable(e)) {
+        mruUnreadable = true
+        mruMemoryOnly = true
+        if (!disposed) say(t('mruUnreadable'), { level: 'warning' })
+        return
+      }
+      /* 别的读错误:落到 sidecar */
     }
   }
   const p = sidecarPath()
@@ -762,6 +792,10 @@ async function loadMru() {
 }
 
 async function saveMru() {
+  if (mruUnreadable) {
+    mruMemoryOnly = true // 存着的那份读不出来:一个字节都不写,saveData 和 sidecar 都不碰
+    return
+  }
   const blob = { v: 1, recent: mru.recent.slice(0, MAX_RECENT) }
   if (ctx.saveData) {
     try {
@@ -783,11 +817,42 @@ async function saveMru() {
   }
 }
 
-async function pushRecent(p) {
-  if (!p) return
+function bumpRecent(p) {
   const next = [p]
   for (let i = 0; i < mru.recent.length; i++) if (mru.recent[i] !== p) next.push(mru.recent[i])
   mru = { v: 1, recent: next.slice(0, MAX_RECENT) }
+}
+
+async function pushRecent(p) {
+  if (!p) return
+  // 启动那次读还没回来:先排着,读完一并记、只存一次 —— 现在就写,写进去的是只有这一条的 MRU,存着的那份就被盖掉了;
+  // 每条各存一次的话,几次保存同时在路上,后用的那条可能被先用的那份顶掉。
+  // 不 await:读要是一直不回来,不能把「建好就打开 / 插进去之后的提示」也一起卡住
+  if (mruLoading) {
+    mruEarly.push(p)
+    if (mruEarly.length === 1) void mruLoading.then(replayEarly)
+    return
+  }
+  bumpRecent(p)
+  await saveMru()
+}
+
+async function replayEarly() {
+  if (mruLoading) {
+    void mruLoading.then(replayEarly) // 又开始了一次读:等那一次
+    return
+  }
+  const list = mruEarly
+  mruEarly = []
+  if (disposed || !list.length) return // 插件已经停用 / 重载:旧实例不再写,免得盖掉新实例存下的
+  for (let i = 0; i < list.length; i++) bumpRecent(list[i])
+  for (const fn of rerenders) {
+    try {
+      fn({}) // 开着的模板库里「最近使用」跟上
+    } catch (e) {
+      /* 重画出错不该挡住保存 */
+    }
+  }
   await saveMru()
 }
 

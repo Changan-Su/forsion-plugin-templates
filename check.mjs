@@ -1367,4 +1367,195 @@ section('[补] 入口行为')
   H.dispose()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// [补] 存过却读不出来(宿主 2026-11-17 起 loadData reject,code = 'plugin-data-unreadable')
+//   「最近使用」只记在本次运行的内存里:不读 sidecar 顶替、不调 saveData、不写 sidecar、提示一次;
+//   没存过(null)/ 别的读错误照旧;启动那次读还没回来时用了模板,等读完再存(存下的是原来的 + 新的)。
+//   断言先收集再统一判(不用 ok/eq 逐条抛),负对照拿老代码跑时能数出几条红几条绿。
+//   负对照(2026-11-18 实跑):拿 origin/main 的 main.js 跑,22 条里 12 条红、10 条绿
+//   (红的是:顶替 sidecar / 不提示 / 照常 saveData / 读回来之前就写、写的只有新的一条 / 读不出来照样写 / 停用后旧实例照样写);
+//   绿着的是「没存过 / 别的读错误照旧」与老代码本来就成立的对照。
+// ═══════════════════════════════════════════════════════════════════════════════
+section('[补] 存过却读不出来')
+{
+  const res = { pass: 0, fail: [] }
+  const rec = (name, cond, detail) => {
+    if (cond) {
+      res.pass++
+      PASS++
+    } else {
+      res.fail.push(name)
+      console.log('  ✗ ' + name + (detail !== undefined ? '  | ' + detail : ''))
+    }
+  }
+  const attempt = async (name, fn) => {
+    try {
+      await fn()
+    } catch (e) {
+      rec(name + '(抛错)', false, e && e.stack ? e.stack.split('\n').slice(0, 2).join(' ') : String(e))
+    }
+  }
+  const unreadable = () => Object.assign(new Error('plugin-data-unreadable'), { code: 'plugin-data-unreadable', reason: 'invalid-json' })
+  const SIDECAR = '模板库/.note-templates.json'
+  const ZH_NOTE = '读不出已保存的「最近使用」记录'
+  const CJK = /[一-鿿　-〿＀-￯]/
+  // 和 boot() 同一套,只多两件:数 saveData 调用次数;可以不等启动读完(读被压住的那一例)
+  const bootWith = async (opts, patch, wait = true) => {
+    _ls = new Map()
+    const H = makeHost(opts)
+    H.saves = []
+    const origSave = H.ctx.saveData
+    if (origSave) {
+      H.ctx.saveData = async (v) => {
+        H.saves.push(JSON.parse(JSON.stringify(v)))
+        return origSave(v)
+      }
+    }
+    if (patch) patch(H)
+    globalThis.__NOTE_TEMPLATES_TEST__ = {}
+    H.dispose = new Function('ctx', src)(H.ctx)
+    H.T = globalThis.__NOTE_TEMPLATES_TEST__
+    if (wait) {
+      await H.T.ready
+      await settle()
+    }
+    return H
+  }
+  const unreadableNotes = (H) => H.notices.filter((n) => String(n.m).includes(ZH_NOTE))
+  const sidecarWrites = (H) => H.writes.filter((p) => p === SIDECAR)
+
+  // U1:读不出来,而且库里还躺着一份 sidecar(旧宿主时代留下的)→ 不拿它顶上;用模板 → 只记在内存
+  await attempt('U1', async () => {
+    const files = { ...FILES, [SIDECAR]: JSON.stringify({ v: 1, recent: ['Templates/读书笔记.md'] }) }
+    const H = await bootWith({ files, prompts: ['本周周会'] }, (h) => {
+      h.ctx.loadData = async () => {
+        throw unreadable()
+      }
+    })
+    rec('U1 不读 sidecar 顶替', (H.T.state().mru.recent || []).length === 0, JSON.stringify(H.T.state().mru))
+    rec('U1 启动时提示一次(warning)', unreadableNotes(H).length === 1 && unreadableNotes(H)[0].o?.level === 'warning', JSON.stringify(H.notices))
+    const finalPath = await H.T.createFromTemplate('Templates/周会.md', 'notes')
+    await settle()
+    rec('U1 用模板新建照常(读不出 MRU 不连坐)', typeof finalPath === 'string' && H.writes.includes(finalPath), JSON.stringify(H.writes))
+    await H.T.pushRecent('Templates/读书笔记.md')
+    await settle()
+    rec('U1 一次 saveData 都没调', H.saves.length === 0, JSON.stringify(H.saves))
+    rec('U1 一次 sidecar 都没写', sidecarWrites(H).length === 0, JSON.stringify(H.writes))
+    rec('U1 sidecar 原封不动', H.V.get(SIDECAR) === files[SIDECAR], H.V.get(SIDECAR))
+    rec('U1 本次运行里「最近使用」照常(只在内存)', JSON.stringify(H.T.state().mru.recent) === JSON.stringify(['Templates/读书笔记.md', 'Templates/周会.md']), JSON.stringify(H.T.state().mru))
+    rec('U1 记成内存态', H.T.state().mruMemoryOnly === true)
+    rec('U1 只提示一次(用模板时不再刷屏)', unreadableNotes(H).length === 1, JSON.stringify(H.notices.map((n) => n.m)))
+    rec('U1 提示中英都有、英文不夹中文', !!H.T.MSG.zh.mruUnreadable && !!H.T.MSG.en.mruUnreadable && !CJK.test(H.T.MSG.en.mruUnreadable || ''))
+    rec('U1 提示里不写路径', !/[\\/]\w/.test((H.T.MSG.zh.mruUnreadable || '') + (H.T.MSG.en.mruUnreadable || '')))
+    H.dispose()
+  })
+
+  // U2:旧宿主 / 没存过:loadData 回 null → 照常写盘、不提示
+  await attempt('U2', async () => {
+    const H = await bootWith({ files: FILES })
+    await H.T.pushRecent('Templates/周会.md')
+    rec('U2 没存过 → 照常写盘', H.saves.length === 1 && JSON.stringify(H.saves[0].recent) === JSON.stringify(['Templates/周会.md']), JSON.stringify(H.saves))
+    rec('U2 没存过 → 不提示', unreadableNotes(H).length === 0)
+    H.dispose()
+  })
+
+  // U3:别的读错误(不带 code)→ 照旧落到 sidecar,不提示
+  await attempt('U3', async () => {
+    const files = { ...FILES, [SIDECAR]: JSON.stringify({ v: 1, recent: ['Templates/读书笔记.md'] }) }
+    const H = await bootWith({ files }, (h) => {
+      h.ctx.loadData = async () => {
+        throw new Error('EIO')
+      }
+    })
+    rec('U3 不带 code 的读错误 → 照旧读 sidecar', JSON.stringify(H.T.state().mru.recent) === JSON.stringify(['Templates/读书笔记.md']), JSON.stringify(H.T.state().mru))
+    rec('U3 不带 code 的读错误 → 不提示', unreadableNotes(H).length === 0)
+    H.dispose()
+  })
+
+  // U4:启动那次读还没回来就用了模板 → 读回来之前不写;读回来之后存下原来的 + 新的
+  await attempt('U4', async () => {
+    let release
+    const H = await bootWith(
+      { files: FILES },
+      (h) => {
+        h.ctx.loadData = () => new Promise((r) => (release = r))
+      },
+      false,
+    )
+    await H.T.pushRecent('Templates/周会.md')
+    await settle()
+    rec('U4 读回来之前不写盘', H.saves.length === 0 && sidecarWrites(H).length === 0, JSON.stringify(H.saves))
+    release?.({ v: 1, recent: ['Templates/读书笔记.md'] })
+    await H.T.ready
+    await settle()
+    const last = H.saves[H.saves.length - 1]
+    rec('U4 读回来之后存下原来的 + 新的', H.saves.length === 1 && JSON.stringify(last.recent) === JSON.stringify(['Templates/周会.md', 'Templates/读书笔记.md']), JSON.stringify(H.saves))
+    H.dispose()
+  })
+
+  // U5:读还没回来就用了模板,读回来是读不出来 → 一笔都不写
+  await attempt('U5', async () => {
+    let fail
+    const H = await bootWith(
+      { files: FILES },
+      (h) => {
+        h.ctx.loadData = () => new Promise((_r, j) => (fail = j))
+      },
+      false,
+    )
+    await H.T.pushRecent('Templates/周会.md')
+    await settle()
+    fail?.(unreadable())
+    await H.T.ready
+    await settle()
+    rec('U5 读回来是读不出来 → 一笔都不写', H.saves.length === 0 && sidecarWrites(H).length === 0, JSON.stringify({ saves: H.saves, writes: H.writes }))
+    rec('U5 那一条只留在内存里', JSON.stringify(H.T.state().mru.recent) === JSON.stringify(['Templates/周会.md']), JSON.stringify(H.T.state().mru))
+    H.dispose()
+  })
+
+  // U6:读回来之前先后用了两个模板 → 读回来之后只存一次,次序是「后用的、先用的、原来的」
+  await attempt('U6', async () => {
+    let release
+    const H = await bootWith(
+      { files: FILES },
+      (h) => {
+        h.ctx.loadData = () => new Promise((r) => (release = r))
+      },
+      false,
+    )
+    await H.T.pushRecent('Templates/周会.md')
+    await H.T.pushRecent('Templates/会议/客户拜访.md')
+    await settle()
+    rec('U6 读回来之前不写盘', H.saves.length === 0, JSON.stringify(H.saves))
+    release?.({ v: 1, recent: ['Templates/读书笔记.md'] })
+    await H.T.ready
+    await settle()
+    rec('U6 读回来之后只存一次:后用的、先用的、原来的', H.saves.length === 1
+      && JSON.stringify(H.saves[0].recent) === JSON.stringify(['Templates/会议/客户拜访.md', 'Templates/周会.md', 'Templates/读书笔记.md']), JSON.stringify(H.saves))
+    H.dispose()
+  })
+
+  // U7:读回来之前用了模板,然后插件被停用 / 重载 → 旧实例读回来之后不再写(免得盖掉新实例存下的)
+  await attempt('U7', async () => {
+    let release
+    const H = await bootWith(
+      { files: FILES },
+      (h) => {
+        h.ctx.loadData = () => new Promise((r) => (release = r))
+      },
+      false,
+    )
+    await H.T.pushRecent('Templates/周会.md')
+    await settle()
+    H.dispose()
+    release?.({ v: 1, recent: ['Templates/读书笔记.md'] })
+    await H.T.ready
+    await settle()
+    rec('U7 停用之后旧实例一笔都不写', H.saves.length === 0 && sidecarWrites(H).length === 0, JSON.stringify(H.saves))
+  })
+
+  console.log(`  读不出已保存的 MRU:${res.pass} 条通过 / ${res.fail.length} 条失败`)
+  A.equal(res.fail.length, 0, '读不出已保存的 MRU:' + res.fail.join(';'))
+}
+
 console.log(`\n✅ 全绿 —— ${PASS} 条断言通过(SPEC §7 的 21 项全覆盖)`)
