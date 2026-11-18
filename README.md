@@ -185,7 +185,7 @@
 | `notify` | 回退 `ctx.app.notify` |
 | `activity` | 不埋点 |
 
-> **存过却读不出来**(2026-11-17 之后的宿主:`loadData` 以 `code: 'plugin-data-unreadable'` 拒绝 —— 文件读出错、是空的、
+> **存过却读不出来**(2.14.2 之后的宿主:`loadData` 以 `code: 'plugin-data-unreadable'` 拒绝 —— 文件读出错、是空的、
 > 写到一半或被手改坏)时,「最近使用」**不**回退到 `模板库/.note-templates.json`:不读它顶替,也不调 `saveData`、不写它,
 > 只在本次运行的内存里记,提示一次;原来存着的那份原封不动,下次启动再读。没存过(`loadData` 回 `null`)和别的读错误照旧走上表那一行。
 > 更早的宿主读不出来时也回 `null`,只能当没存过。
